@@ -3,24 +3,28 @@
 支持：文件夹处理 + 口味识别 + 1:1 比例 + 目录结构保留 + 英文文件名输出
 """
 
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, abort, jsonify, render_template, request, send_from_directory
 from flask_cors import CORS
+import argparse
 import os
 import io
-import json
 import threading
 import uuid
-from datetime import datetime
+import webbrowser
+from pathlib import Path
 from PIL import Image
 import base64
 import re
 import time
 import requests
 from openai import OpenAI
-from concurrent.futures import ThreadPoolExecutor
-import queue
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import shutil
 from typing import Optional, Dict, Tuple
+from urllib.parse import urlsplit
+from werkzeug.serving import make_server
+
+from image_presets import EditSettings, MAX_BRAND_TEXT, MAX_CUSTOM_REQUIREMENTS
 
 # ==================== Flask 应用初始化 ====================
 app = Flask(__name__)
@@ -36,7 +40,8 @@ os.makedirs(app.config['SKIP_HUMAN_FOLDER'], exist_ok=True)
 
 # 存储任务状态
 tasks = {}
-task_logs = {}
+tasks_lock = threading.Lock()
+folder_dialog_lock = threading.Lock()
 
 # ==================== 口味库定义（用于识别和提示词，不影响文件名） ====================
 FLAVOR_DATABASE = {
@@ -153,7 +158,7 @@ def clean_filename(name: str) -> str:
     return f"{stem}.webp"
 
 
-def classify_image(client, in_path: str) -> str:
+def classify_image(client, in_path: str, model: str = "gpt-4o-mini") -> str:
     """分类图片"""
     try:
         with Image.open(in_path) as im:
@@ -164,7 +169,7 @@ def classify_image(client, in_path: str) -> str:
             b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model,
             temperature=0,
             max_tokens=15,
             messages=[{
@@ -184,53 +189,38 @@ def classify_image(client, in_path: str) -> str:
     return "universal"
 
 
-def process_image_task(task_id, client, in_path, output_dir, skip_human_dir, config, rel_path_in=None):
+def process_image_task(client, in_path, output_dir, skip_human_dir, config, settings, rel_path_in):
     """处理单张图片"""
     file_name = os.path.basename(in_path)
     new_name = clean_filename(file_name)
+    rel_dir = os.path.dirname(rel_path_in)
+    out_path = os.path.join(output_dir, rel_dir, new_name)
+    rel_out = os.path.relpath(out_path, output_dir).replace(os.sep, "/")
 
-    # 计算输出路径（保持目录结构）
-    if rel_path_in:
-        rel_dir = os.path.dirname(rel_path_in)
-        out_path = os.path.join(output_dir, rel_dir, new_name)
-    else:
-        out_path = os.path.join(output_dir, new_name)
+    if os.path.isfile(out_path):
+        return {"status": "SKIPPED", "message": f"已有结果：{rel_path_in}", "output": rel_out}
 
-    if os.path.exists(out_path):
-        task_logs[task_id].append({"status": "SKIPPED", "message": f"Already exists: {rel_path_in or file_name}"})
-        tasks[task_id]["stats"]["SKIPPED"] += 1
-        return
-
-    # 分类
-    category = classify_image(client, in_path)
-
-    # 识别口味（用于提示词，不影响文件名）
-    flavor_result = extract_flavor_from_filename(file_name)
-    flavor_info = flavor_result[1] if flavor_result else None
+    skip_human = config.get("skip_human", True) and skip_human_dir
+    category = "universal"
+    if settings.preset == "standard" or skip_human:
+        category = classify_image(client, in_path, config.get("vision_model") or "gpt-4o-mini")
 
     # 隔离真人模特图
-    if category == "human_model" and config.get("skip_human", True) and skip_human_dir:
-        if rel_path_in:
-            rel_dir = os.path.dirname(rel_path_in)
-            skip_path_dir = os.path.join(skip_human_dir, rel_dir)
-        else:
-            skip_path_dir = skip_human_dir
-
+    if category == "human_model" and skip_human:
+        skip_path_dir = os.path.join(skip_human_dir, rel_dir)
         os.makedirs(skip_path_dir, exist_ok=True)
         shutil.copy2(in_path, os.path.join(skip_path_dir, file_name))
-        task_logs[task_id].append({"status": "SKIPPED", "message": f"Human model skipped: {rel_path_in or file_name}"})
-        tasks[task_id]["stats"]["SKIPPED"] += 1
-        return
+        return {"status": "SKIPPED", "message": f"已隔离真人模特图：{rel_path_in}"}
 
-    # 生成提示词
-    prompt = generate_flavor_aware_prompt(category, flavor_info)
+    flavor = extract_flavor_from_filename(file_name) if settings.preset == "standard" else None
+    prompt = settings.prompt(generate_flavor_aware_prompt(category, flavor[1] if flavor else None))
 
     # AI 重绘（3 次重试）
     for attempt in range(3):
         try:
             with open(in_path, "rb") as img_file:
                 resp = client.images.edit(
-                    model=config.get("image_model", "gpt-image-2.5-sunburst"),
+                    model=config.get("image_model") or "gpt-image-2.5-sunburst",
                     image=img_file,
                     prompt=prompt,
                     size="1024x1024",  # ✅ 固定 1:1 正方形
@@ -256,23 +246,16 @@ def process_image_task(task_id, client, in_path, output_dir, skip_human_dir, con
 
             img.save(out_path, format="WEBP", quality=85, method=6)
 
-            rel_out = os.path.relpath(out_path, output_dir)
-            task_logs[task_id].append({"status": "SUCCESS", "message": f"{rel_path_in or file_name} → {rel_out}"})
-            tasks[task_id]["stats"]["SUCCESS"] += 1
-            return
+            return {"status": "SUCCESS", "message": f"{rel_path_in} → {rel_out}", "output": rel_out}
 
         except Exception as e:
             err = str(e)
             if "safety" in err.lower() or "moderation" in err.lower():
-                task_logs[task_id].append({"status": "BLOCKED", "message": f"Safety blocked: {rel_path_in or file_name}"})
-                tasks[task_id]["stats"]["BLOCKED"] += 1
-                return
+                return {"status": "BLOCKED", "message": f"API 内容审核拦截：{rel_path_in}"}
             if attempt < 2:
                 time.sleep(3 * (attempt + 1))
             else:
-                task_logs[task_id].append({"status": "FAILED", "message": f"{rel_path_in or file_name}: {err[:60]}"})
-                tasks[task_id]["stats"]["FAILED"] += 1
-                return
+                return {"status": "FAILED", "message": f"{rel_path_in}: {err[:60]}"}
 
 
 def collect_images_from_folder(folder_path: str):
@@ -294,103 +277,232 @@ def collect_images_from_folder(folder_path: str):
     return result
 
 
+def normalize_folder_path(path: str) -> str:
+    path = path.strip()
+    if len(path) >= 2 and path[0] == path[-1] == '"':
+        path = path[1:-1]
+    if os.name == 'nt' and re.fullmatch(r'[A-Za-z]:', path):
+        path += os.sep
+    return path
+
+
+def choose_local_folder(initial_dir: str) -> str:
+    import tkinter as tk
+    from tkinter import filedialog
+
+    root = tk.Tk()
+    try:
+        if os.name == 'nt':
+            # A mapped foreground owner keeps the native dialog accessible from the desktop.
+            root.title('源文件夹选择器')
+            root.geometry('1x1')
+            root.attributes('-topmost', True)
+            root.update()
+            root.lift()
+            root.focus_force()
+        else:
+            root.withdraw()
+        return filedialog.askdirectory(
+            parent=root, initialdir=initial_dir, title='选择源文件夹', mustexist=True
+        )
+    finally:
+        root.destroy()
+
+
 # ==================== Flask 路由 ====================
 
 @app.route('/', methods=['GET'])
 def index():
     """前端主页"""
-    return render_template('index_pro.html')
+    return render_template('index_pro.html', max_brand_text=MAX_BRAND_TEXT,
+                           max_custom_requirements=MAX_CUSTOM_REQUIREMENTS)
+
+
+@app.route('/api/pick_source_folder', methods=['POST'])
+def pick_source_folder():
+    local_hosts = {'127.0.0.1', 'localhost', '::1'}
+    origin = request.host_url.rstrip('/')
+    if (request.remote_addr not in {'127.0.0.1', '::1'}
+            or urlsplit(origin).hostname not in local_hosts
+            or request.headers.get('Origin') != origin):
+        return jsonify(message='请在运行工具的电脑上打开页面，或手动输入目录。'), 403
+
+    data = request.get_json(silent=True)
+    folder_path = data.get('folder_path', '') if isinstance(data, dict) else ''
+    initial_dir = normalize_folder_path(folder_path) if isinstance(folder_path, str) else ''
+    if not os.path.isdir(initial_dir):
+        initial_dir = os.getcwd()
+
+    if not folder_dialog_lock.acquire(blocking=False):
+        return jsonify(message='目录选择窗口已打开。'), 409
+    try:
+        selected_path = choose_local_folder(os.path.abspath(initial_dir))
+    except Exception:
+        app.logger.exception('Unable to open the local folder dialog')
+        return jsonify(message='无法打开目录选择窗口，请手动输入路径。'), 503
+    finally:
+        folder_dialog_lock.release()
+    return jsonify(folder_path=os.path.normpath(selected_path) if selected_path else None)
 
 
 @app.route('/api/scan_folder', methods=['POST'])
 def scan_folder():
     """扫描文件夹"""
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"status": "error", "message": "请填写源文件夹路径。"}), 400
     folder_path = data.get('folder_path', './raw_images')
 
-    if not os.path.exists(folder_path):
-        return jsonify({"status": "error", "message": "Folder not found"}), 400
+    if not isinstance(folder_path, str):
+        return jsonify({"status": "error", "message": "请填写源文件夹路径。"}), 400
+    folder_path = normalize_folder_path(folder_path)
+    if not os.path.isdir(folder_path):
+        return jsonify({"status": "error", "message": "找不到源文件夹。"}), 400
 
     images = collect_images_from_folder(folder_path)
+    folder_tree = {}
+    for item in images:
+        folder = os.path.dirname(item['rel_path']) or '.'
+        folder_tree.setdefault(folder, []).append(item['name'])
 
     return jsonify({
         "status": "success",
         "count": len(images),
         "images": images,
-        "folder_path": folder_path
+        "folder_path": folder_path,
+        "folder_tree": folder_tree,
     })
 
 
+@app.route('/api/process_folder', methods=['POST'], defaults={'task_id': None})
 @app.route('/api/process_folder/<task_id>', methods=['POST'])
 def process_folder(task_id):
-    """处理文件夹"""
-    data = request.json
+    """提交后台任务，立即返回供页面轮询。"""
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not isinstance(data.get('config', {}), dict):
+        return jsonify({"status": "error", "message": "无效的任务配置。"}), 400
+
     config = data.get('config', {})
     images = data.get('images', [])
-    output_dir = data.get('output_dir', app.config['OUTPUT_FOLDER'])
+    source_dir = data.get('source_dir', '')
+    output_root = data.get('output_dir', app.config['OUTPUT_FOLDER'])
     skip_human_dir = data.get('skip_human_dir', app.config['SKIP_HUMAN_FOLDER'])
+    try:
+        settings = EditSettings(
+            preset=config.get('preset', 'standard'),
+            custom_requirements=config.get('custom_requirements', ''),
+            brand_text=config.get('brand_text', ''),
+        )
+        if not isinstance(images, list) or not images:
+            raise ValueError("请先扫描并选择有图片的源文件夹。")
+        for item in images:
+            if not isinstance(item, dict) or not all(isinstance(item.get(key), str) for key in ('full_path', 'rel_path')):
+                raise ValueError("图片路径无效，请重新扫描。")
+            relative = Path(item['rel_path'])
+            if relative.anchor or '..' in relative.parts or relative.name != Path(item['full_path']).name:
+                raise ValueError("图片路径无效，请重新扫描。")
+        if not isinstance(output_root, str) or not output_root.strip() or not isinstance(skip_human_dir, str):
+            raise ValueError("请填写有效的输出目录和隔离目录。")
+        if not isinstance(source_dir, str):
+            raise ValueError("源文件夹路径无效，请重新扫描。")
+        workers = config.get('max_workers', 3)
+        if type(workers) is not int or not 1 <= workers <= 10:
+            raise ValueError("并发线程数须为 1 至 10 之间的整数。")
+        client = OpenAI(base_url=config.get('base_url'), api_key=config.get('api_key'), timeout=60)
+    except Exception as exc:
+        return jsonify({"status": "error", "message": str(exc)[:200]}), 400
 
-    tasks[task_id] = {
+    task_id = task_id or uuid.uuid4().hex
+    output_dir = os.path.abspath(settings.output_directory(output_root, source_dir))
+    task = {
         "status": "processing",
         "stats": {"SUCCESS": 0, "FAILED": 0, "SKIPPED": 0, "BLOCKED": 0},
-        "total": len(images)
+        "total": len(images),
+        "logs": [],
+        "output_dir": output_dir,
+        "files": set(),
     }
-    task_logs[task_id] = []
+    with tasks_lock:
+        if task_id in tasks:
+            client.close()
+            return jsonify({"status": "error", "message": "该任务已提交。"}), 409
+        tasks[task_id] = task
 
+    threading.Thread(
+        target=run_folder_task,
+        args=(task, client, workers, images, skip_human_dir, config, settings),
+        daemon=True,
+    ).start()
+    return jsonify({"status": "ok", "task_id": task_id, "output_dir": output_dir})
+
+
+def run_folder_task(task, client, workers, images, skip_human_dir, config, settings):
     try:
-        client = OpenAI(
-            base_url=config.get('base_url'),
-            api_key=config.get('api_key'),
-            timeout=60
-        )
-
-        max_workers = config.get('max_workers', 3)
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = []
-            for img in images:
-                future = executor.submit(
+        with client, ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(
                     process_image_task,
-                    task_id,
                     client,
-                    img['full_path'],
-                    output_dir,
+                    item['full_path'],
+                    task['output_dir'],
                     skip_human_dir,
                     config,
-                    img['rel_path']
-                )
-                futures.append(future)
-
-            for future in futures:
+                    settings,
+                    item['rel_path'],
+                ): item['rel_path'] for item in images
+            }
+            for future in as_completed(futures):
                 try:
-                    future.result()
-                except Exception as e:
-                    print(f"Worker error: {e}")
-
-        tasks[task_id]["status"] = "completed"
-
-    except Exception as e:
-        tasks[task_id]["status"] = "failed"
-        tasks[task_id]["error"] = str(e)
-
-    return jsonify({"status": "ok", "task_id": task_id})
+                    result = future.result()
+                except Exception as exc:
+                    result = {"status": "FAILED", "message": f"{futures[future]}: {str(exc)[:120]}"}
+                with tasks_lock:
+                    task['stats'][result['status']] += 1
+                    task['logs'].append({"status": result['status'], "message": result['message']})
+                    if 'output' in result:
+                        task['files'].add(result['output'])
+        with tasks_lock:
+            task['status'] = 'completed'
+    except Exception as exc:
+        with tasks_lock:
+            task['status'] = 'failed'
+            task['error'] = str(exc)[:200]
 
 
 @app.route('/api/task/<task_id>', methods=['GET'])
 def get_task_status(task_id):
-    """获取任务状态"""
-    if task_id not in tasks:
-        return jsonify({"status": "error", "message": "Task not found"}), 404
+    with tasks_lock:
+        task = tasks.get(task_id)
+        if task is None:
+            return jsonify({"status": "error", "message": "找不到该任务。"}), 404
+        return jsonify({
+            "status": task['status'],
+            "stats": task['stats'],
+            "logs": task['logs'][-50:],
+            "total": task['total'],
+            "error": task.get('error'),
+        })
 
-    task = tasks[task_id]
-    logs = task_logs.get(task_id, [])
 
-    return jsonify({
-        "status": task.get("status"),
-        "stats": task.get("stats", {}),
-        "logs": logs[-50:],  # 返回最后 50 条日志
-        "total": task.get("total", 0)
-    })
+@app.route('/api/outputs/<task_id>')
+def list_task_outputs(task_id):
+    with tasks_lock:
+        task = tasks.get(task_id)
+        if task is None:
+            abort(404)
+        return jsonify(files=sorted(task['files']))
+
+
+@app.route('/api/preview/<task_id>/<path:filename>')
+def preview_task_output(task_id, filename):
+    with tasks_lock:
+        task = tasks.get(task_id)
+        if task is None or filename not in task['files']:
+            abort(404)
+        output_dir = task['output_dir']
+    response = send_from_directory(output_dir, filename)
+    response.cache_control.no_store = True
+    return response
 
 
 @app.route('/api/verify', methods=['POST'])
@@ -462,5 +574,20 @@ def config():
         })
 
 
+def launch_web_ui():
+    """Bind a local port before opening this instance in the browser."""
+    with make_server('127.0.0.1', 0, app, threaded=True) as server:
+        url = f'http://127.0.0.1:{server.server_port}/'
+        print(f'  Open browser: {url}', flush=True)
+        threading.Thread(target=webbrowser.open_new_tab, args=(url,), daemon=True).start()
+        server.serve_forever()
+
+
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=5000, threaded=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--open-browser', action='store_true',
+                        help='Open the local interface on an available port.')
+    if parser.parse_args().open_browser:
+        launch_web_ui()
+    else:
+        app.run(debug=False, host='0.0.0.0', port=5000, threaded=True)

@@ -1,6 +1,6 @@
 # 电商主图 AI 重构工具
 
-批量将电商产品图通过 AI 重绘，输出去元数据的 1:1 WebP 格式，规避原始图片侵权风险。
+使用自有实拍或授权素材批量制作 1024×1024 WebP 产品图，支持标准主图、品牌棚拍和自定义要求。
 
 ## 目录结构
 
@@ -13,6 +13,7 @@ img2img-skill/
 │   └── index_pro.html       ← Flask Web UI 前端
 ├── app_flask_pro_english.py ← Flask Web 服务
 ├── batch_product_main_cli.py← 命令行批处理工具
+├── image_presets.py         ← Web 和命令行共用的出图要求
 ├── .env.local.example       ← 配置模板（复制为 .env.local 填入密钥）
 ├── start_web.bat            ← 一键启动 Web 界面
 └── start_cli.bat            ← 一键启动命令行处理
@@ -49,13 +50,16 @@ pip install flask flask-cors pillow openai requests -q
 
 ### 方式 A：Web 界面（推荐）
 
-双击 `start_web.bat`，浏览器打开 `http://localhost:5000`
+双击 `start_web.bat`。工具会选择可用的本地端口，并在浏览器中打开本次启动的页面。地址也会显示在工具窗口里。
 
 **操作流程：**
 1. 在配置页填入 API Key 和 Base URL
-2. 在主页输入原图文件夹路径，点击扫描
-3. 确认文件列表后点击开始处理
-4. 实时查看进度和日志
+2. 在首页直接输入自有实拍或授权素材目录，或点击「浏览文件夹」从本机选择。两种方式都支持中文路径。确认路径后点击「扫描文件夹」。
+3. 选择「标准主图」「品牌棚拍 · 保留包装信息」或「完全自定义」。品牌棚拍默认使用低饱和渐变和柔光，将印刷的品牌、型号、口味、规格和警示语交给模型按原文保留。可填写准确的品牌或型号拼写，再补充背景、布光和摆位要求。
+4. 点击「试跑首张」，在「预览查看」打开成品原尺寸。AI 可能误写小字，核对包装印刷后再批量处理。
+5. 首页显示本次输出目录。使用包装预设、自定义要求或品牌文字时，结果会按源目录和出图设置写入独立子目录。用同样的设置批量运行，可接着处理试跑后的剩余图片。
+
+重绘和移除文件元数据均无法替代素材授权。Google Ads 将电子烟列为禁止投放的产品示例，Google Merchant Center 也在危险产品政策中列出电子烟。[Google Ads 烟草政策](https://support.google.com/adspolicy/answer/16489929) · [Google Merchant Center 危险产品政策](https://support.google.com/merchants/answer/6150004)
 
 ### 方式 B：命令行
 
@@ -73,6 +77,9 @@ python batch_product_main_cli.py --input ./raw_images --max-workers 5
 
 # 仅预览，不处理
 python batch_product_main_cli.py --input ./raw_images --dry-run
+
+# 品牌棚拍，输入目录使用自有实拍或授权包装图
+python batch_product_main_cli.py --input ./raw_images --preset packaging --brand-text "品牌 型号" --custom-requirements "低饱和暖灰背景，柔和侧光，产品与包装错位摆放"
 ```
 
 ---

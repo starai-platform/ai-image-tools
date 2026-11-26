@@ -4,8 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>🎨 电商主图 AI 重构工具 Pro</title>
-    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * {
             margin: 0;
@@ -153,6 +151,58 @@
             outline: none;
             border-color: #667eea;
             box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .field-hint {
+            margin-top: 6px;
+            color: #526075;
+            font-size: 0.9em;
+            line-height: 1.5;
+        }
+
+        .form-group textarea {
+            font-family: inherit;
+            resize: vertical;
+        }
+
+        .source-folder-input {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .source-folder-input #folderPath {
+            flex: 1 1 230px;
+            min-width: 0;
+        }
+
+        .source-folder-input button:disabled {
+            cursor: wait;
+            opacity: 0.6;
+        }
+
+        .btn-group button:disabled {
+            cursor: wait;
+            opacity: 0.6;
+        }
+
+        .result-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 20px;
+        }
+
+        .result-grid a {
+            color: inherit;
+            overflow-wrap: anywhere;
+        }
+
+        .result-grid img {
+            display: block;
+            width: 100%;
+            aspect-ratio: 1;
+            object-fit: contain;
+            margin-bottom: 6px;
         }
 
         .btn-group {
@@ -460,10 +510,10 @@
             <div class="sidebar">
                 <div class="sidebar-section">
                     <h3>📋 功能</h3>
-                    <button class="btn active" onclick="switchTab('folder')">📂 文件夹处理</button>
-                    <button class="btn" onclick="switchTab('monitor')">📊 实时监控</button>
-                    <button class="btn" onclick="switchTab('preview')">📸 预览查看</button>
-                    <button class="btn" onclick="switchTab('config')">⚙️ 配置设置</button>
+                    <button class="btn active" onclick="switchTab('folder', this)">📂 文件夹处理</button>
+                    <button class="btn" onclick="switchTab('monitor', this)">📊 实时监控</button>
+                    <button class="btn" onclick="switchTab('preview', this)">📸 预览查看</button>
+                    <button class="btn" onclick="switchTab('config', this)">⚙️ 配置设置</button>
                 </div>
 
                 <div class="sidebar-section">
@@ -485,8 +535,12 @@
                     <div class="config-section">
                         <h4>📁 选择源文件夹</h4>
                         <div class="form-group">
-                            <label>文件夹路径</label>
-                            <input type="text" id="folderPath" value="./raw_images" placeholder="例：./raw_images">
+                            <label for="folderPath">自有或授权素材文件夹</label>
+                            <div class="source-folder-input">
+                                <input type="text" id="folderPath" value="./raw_images" placeholder="例：E:\素材\包装图" spellcheck="false">
+                                <button type="button" class="btn-secondary" id="browseSourceFolder" onclick="pickSourceFolder()">浏览文件夹…</button>
+                            </div>
+                            <p class="field-hint">放入自有实拍图或授权包装素材。参考成品的风格可以写进下方要求。</p>
                         </div>
                         <button class="btn-primary" onclick="scanFolder()">🔍 扫描文件夹</button>
                     </div>
@@ -498,6 +552,29 @@
 
                     <div class="folder-tree" id="folderTree" style="display: none;">
                         <p style="text-align: center; color: #999;">文件夹结构将显示在这里</p>
+                    </div>
+
+                    <div class="config-section">
+                        <h4>出图要求</h4>
+                        <div class="form-group">
+                            <label for="editPreset">出图预设</label>
+                            <select id="editPreset" aria-describedby="presetHint">
+                                <option value="standard">标准主图</option>
+                                <option value="packaging">品牌棚拍 · 保留包装信息</option>
+                                <option value="custom">完全自定义</option>
+                            </select>
+                            <p class="field-hint" id="presetHint">沿用产品主图风格，根据文件名识别口味。</p>
+                        </div>
+                        <div class="form-group">
+                            <label for="brandText">品牌 / 型号原文（选填）</label>
+                            <input type="text" id="brandText" maxlength="{{ max_brand_text }}" placeholder="填写素材上已有的品牌和型号，保留大小写">
+                        </div>
+                        <div class="form-group">
+                            <label for="customRequirements">自定义要求</label>
+                            <textarea id="customRequirements" maxlength="{{ max_custom_requirements }}" rows="3"
+                                aria-describedby="requirementsHint" placeholder="例如用低饱和暖灰背景和柔和侧光，产品与包装错位摆放，保留标签可读性。"></textarea>
+                            <p class="field-hint" id="requirementsHint">整个批次共用。试跑后请放大核对品牌、规格与警示文字。</p>
+                        </div>
                     </div>
 
                     <div class="config-section">
@@ -541,8 +618,9 @@
                         </div>
                     </div>
 
-                    <div class="btn-group" style="grid-template-columns: 1fr 1fr;">
-                        <button class="btn-success" onclick="startProcessing()">🚀 开始处理</button>
+                    <div class="btn-group">
+                        <button class="btn-primary" id="startSample" onclick="startProcessing(true)">试跑首张</button>
+                        <button class="btn-success" id="startBatch" onclick="startProcessing()">开始批量处理</button>
                         <button class="btn-secondary" onclick="resetFolder()">🔄 重置</button>
                     </div>
 
@@ -551,6 +629,7 @@
                     </div>
 
                     <p id="progressText" style="text-align: center; color: #666; margin: 10px 0;">准备就绪</p>
+                    <p id="taskOutput" class="field-hint" style="overflow-wrap: anywhere;"></p>
 
                     <h3 style="margin-top: 30px;">📋 处理日志</h3>
                     <div class="logs-container" id="folderLogs">
@@ -677,17 +756,89 @@
         let currentTaskId = null;
         let currentConfig = {};
         let scanResults = null;
+        let isProcessing = false;
+
+        const presetHints = {
+            standard: '沿用产品主图风格，根据文件名识别口味。',
+            packaging: '用低饱和渐变、柔光和留白展现产品，优先保留包装上的品牌、型号、规格和警示。',
+            custom: '按本批次填写的要求设计画面，优先保留素材上的产品信息。',
+        };
+
+        async function requestJson(path, data) {
+            const options = data === undefined ? {} : {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data),
+            };
+            const response = await fetch(path, options);
+            const body = await response.json().catch(() => null);
+            if (!response.ok) {
+                throw Object.assign(new Error(body?.message || `请求失败（HTTP ${response.status}）`), {
+                    status: response.status,
+                });
+            }
+            return body;
+        }
 
         // 初始化
         document.addEventListener('DOMContentLoaded', () => {
             loadConfig();
+            document.getElementById('editPreset').addEventListener('change', updatePresetHint);
+            document.getElementById('folderPath').addEventListener('input', clearFolderScan);
         });
+
+        function updatePresetHint() {
+            const preset = document.getElementById('editPreset').value;
+            document.getElementById('presetHint').textContent = presetHints[preset];
+            document.getElementById('customRequirements').required = preset === 'custom';
+        }
+
+        function sourceFolderPath() {
+            const path = document.getElementById('folderPath').value.trim().replace(/^"(.*)"$/, '$1');
+            return /^[A-Za-z]:$/.test(path) ? path + '/' : path;
+        }
+
+        function clearFolderScan() {
+            scanResults = null;
+            document.getElementById('folderInfo').style.display = 'none';
+            document.getElementById('folderTree').style.display = 'none';
+            document.getElementById('pendingCount').textContent = '0';
+        }
+
+        async function pickSourceFolder() {
+            const button = document.getElementById('browseSourceFolder');
+            const initialPath = sourceFolderPath();
+            button.disabled = true;
+            button.textContent = '选择中…';
+            try {
+                const selection = await requestJson('/api/pick_source_folder', {folder_path: initialPath});
+                if (selection?.folder_path && selection.folder_path !== sourceFolderPath()) {
+                    document.getElementById('folderPath').value = selection.folder_path;
+                    clearFolderScan();
+                }
+            } catch (e) {
+                showAlert('folderAlert', e.message, 'error');
+            } finally {
+                button.disabled = false;
+                button.textContent = '浏览文件夹…';
+            }
+        }
+
+        function groupScannedImages(images) {
+            return images.reduce((folders, image) => {
+                const parts = image.rel_path.split(/[\\/]/);
+                const name = parts.pop();
+                const folder = parts.join('/') || '.';
+                if (!folders.has(folder)) folders.set(folder, []);
+                folders.get(folder).push(image.name || name);
+                return folders;
+            }, new Map());
+        }
 
         // 加载配置
         async function loadConfig() {
             try {
-                const res = await axios.get('/api/config');
-                currentConfig = res.data;
+                currentConfig = await requestJson('/api/config');
                 document.getElementById('apiKey').value = currentConfig.api_key || '';
                 document.getElementById('baseUrl').value = currentConfig.base_url || '';
                 document.getElementById('visionModel').value = currentConfig.vision_model || 'gpt-4o-mini';
@@ -700,98 +851,119 @@
 
         // 扫描文件夹
         async function scanFolder() {
-            const folderPath = document.getElementById('folderPath').value;
+            const folderPath = sourceFolderPath();
 
             if (!folderPath) {
                 showAlert('folderAlert', '❌ 请输入文件夹路径', 'error');
                 return;
             }
 
+            clearFolderScan();
             try {
-                const res = await axios.post('/api/scan_folder', { folder_path: folderPath });
-                scanResults = res.data;
+                const data = await requestJson('/api/scan_folder', {folder_path: folderPath});
+                if (folderPath !== sourceFolderPath()) return;
+                if (!Array.isArray(data?.images)) {
+                    throw new Error('扫描结果缺少图片列表，请重启工具后再试。');
+                }
+                const folders = groupScannedImages(data.images);
+                scanResults = {images: data.images, folder_path: folderPath};
 
-                document.getElementById('imageCount').textContent = res.data.count;
+                document.getElementById('imageCount').textContent = data.count;
                 document.getElementById('folderInfo').style.display = 'block';
-                document.getElementById('pendingCount').textContent = res.data.count;
+                document.getElementById('pendingCount').textContent = data.count;
 
                 // 显示文件夹树形结构
                 const folderTree = document.getElementById('folderTree');
-                let html = '<p><strong>📁 文件夹结构</strong></p>';
+                const heading = document.createElement('strong');
+                heading.textContent = '📁 文件夹结构';
+                folderTree.replaceChildren(heading);
 
-                for (const [folder, files] of Object.entries(res.data.folder_tree)) {
-                    html += `<div class="folder-item folder">📁 ${folder} (${files.length} 张)</div>`;
+                for (const [folder, files] of folders) {
+                    const label = document.createElement('div');
+                    label.className = 'folder-item folder';
+                    label.textContent = `📁 ${folder} (${files.length} 张)`;
+                    folderTree.appendChild(label);
                     for (const file of files) {
-                        html += `<div class="folder-item file">🖼️ ${file}</div>`;
+                        const row = document.createElement('div');
+                        row.className = 'folder-item file';
+                        row.textContent = `🖼️ ${file}`;
+                        folderTree.appendChild(row);
                     }
                 }
 
-                folderTree.innerHTML = html;
-                folderTree.style.display = 'block';
+                folderTree.style.display = data.count ? 'block' : 'none';
 
-                showAlert('folderAlert', `✅ 扫描完成！共找到 ${res.data.count} 张图片`, 'success');
+                showAlert('folderAlert', `✅ 扫描完成！共找到 ${data.count} 张图片`, 'success');
             } catch (e) {
-                showAlert('folderAlert', `❌ ${e.response?.data?.message || e.message}`, 'error');
+                showAlert('folderAlert', `❌ ${e.message}`, 'error');
             }
         }
 
         // 开始处理
-        async function startProcessing() {
-            if (!scanResults) {
-                showAlert('folderAlert', '❌ 请先扫描文件夹', 'error');
+        async function startProcessing(sample = false) {
+            if (isProcessing) return;
+
+            const source = sourceFolderPath();
+            if (!scanResults?.images.length || scanResults.folder_path !== source) {
+                showAlert('folderAlert', '❌ 请先扫描有图片的源文件夹', 'error');
                 return;
             }
 
-            if (!currentConfig.api_key || !currentConfig.base_url) {
+            const config = {
+                api_key: document.getElementById('apiKey').value.trim(),
+                base_url: document.getElementById('baseUrl').value.trim(),
+                vision_model: document.getElementById('visionModel').value || currentConfig.vision_model,
+                image_model: document.getElementById('imageModel').value || currentConfig.image_model,
+                max_workers: Number(document.getElementById('maxWorkers').value),
+                skip_human: document.getElementById('skipHumanImages').checked,
+                preset: document.getElementById('editPreset').value,
+                brand_text: document.getElementById('brandText').value.trim(),
+                custom_requirements: document.getElementById('customRequirements').value.trim(),
+            };
+            if (!config.api_key || !config.base_url) {
                 showAlert('folderAlert', '❌ 请先配置 API Key 和 Base URL', 'error');
                 return;
             }
+            if (config.preset === 'custom' && !config.custom_requirements) {
+                showAlert('folderAlert', '❌ 请填写自定义要求', 'error');
+                document.getElementById('customRequirements').focus();
+                return;
+            }
 
+            setProcessing(true);
             try {
-                // 创建任务
-                const createRes = await axios.post('/api/create_task');
-                currentTaskId = createRes.data.task_id;
-
-                const outputDir = document.getElementById('outputDir').value;
-                const skipHumanDir = document.getElementById('skipHumanDir').value;
-                const skipHumanImages = document.getElementById('skipHumanImages').checked;
-
-                // 更新配置
-                const config = {
-                    api_key: currentConfig.api_key,
-                    base_url: currentConfig.base_url,
-                    vision_model: currentConfig.vision_model,
-                    image_model: currentConfig.image_model,
-                    max_workers: parseInt(currentConfig.max_workers),
-                    skip_human: skipHumanImages,
-                };
-
-                // 开始处理
-                await axios.post(`/api/process_folder/${currentTaskId}`, {
+                const data = await requestJson('/api/process_folder', {
                     config,
-                    images: scanResults.images,
-                    output_dir: outputDir,
-                    skip_human_dir: skipHumanDir,
+                    source_dir: scanResults.folder_path,
+                    images: sample ? scanResults.images.slice(0, 1) : scanResults.images,
+                    output_dir: document.getElementById('outputDir').value.trim(),
+                    skip_human_dir: document.getElementById('skipHumanDir').value.trim(),
                 });
-
-                showAlert('folderAlert', '✅ 处理已启动...', 'success');
+                currentTaskId = data.task_id;
+                document.getElementById('taskOutput').textContent = `本次输出目录：${data.output_dir}`;
+                document.getElementById('progressFill').style.width = '0%';
                 document.getElementById('progressText').textContent = '处理中...';
-
-                // 轮询任务状态
                 pollTaskStatus();
-
             } catch (e) {
-                showAlert('folderAlert', `❌ ${e.response?.data?.message || e.message}`, 'error');
+                setProcessing(false);
+                showAlert('folderAlert', `❌ ${e.message}`, 'error');
             }
         }
 
+        function setProcessing(running) {
+            isProcessing = running;
+            document.getElementById('startSample').disabled = running;
+            document.getElementById('startBatch').disabled = running;
+        }
+
         // 轮询任务状态
-        async function pollTaskStatus() {
-            if (!currentTaskId) return;
+        async function pollTaskStatus(auto = true) {
+            const taskId = currentTaskId;
+            if (!taskId) return;
 
             try {
-                const res = await axios.get(`/api/task/${currentTaskId}`);
-                const task = res.data;
+                const task = await requestJson(`/api/task/${taskId}`);
+                if (taskId !== currentTaskId) return;
 
                 // 更新统计
                 document.getElementById('successCount').textContent = task.stats.SUCCESS;
@@ -805,29 +977,34 @@
 
                 // 更新日志
                 const logsDiv = document.getElementById('folderLogs');
-                logsDiv.innerHTML = task.logs.map(log => {
-                    const className = log.status.toLowerCase();
-                    return `<div class="log-item ${className}"><span class="time">${new Date().toLocaleTimeString()}</span>${log.message}</div>`;
-                }).join('');
+                const statusStyles = {SUCCESS: 'success', FAILED: 'error', SKIPPED: 'warning', BLOCKED: 'warning'};
+                logsDiv.replaceChildren(...task.logs.map(log => {
+                    const row = document.createElement('div');
+                    row.className = `log-item ${statusStyles[log.status]}`;
+                    row.textContent = `${log.status} · ${log.message}`;
+                    return row;
+                }));
                 logsDiv.scrollTop = logsDiv.scrollHeight;
 
-                // 更新进度
-                if (scanResults) {
-                    const total = task.stats.SUCCESS + task.stats.FAILED + task.stats.SKIPPED + task.stats.BLOCKED;
-                    const progress = total / scanResults.count;
-                    document.getElementById('progressFill').style.width = (progress * 100) + '%';
-                    document.getElementById('progressText').textContent = `处理中... ${total}/${scanResults.count}`;
-                }
-
-                // 检查是否完成
+                const processed = Object.values(task.stats).reduce((sum, count) => sum + count, 0);
+                document.getElementById('progressFill').style.width = `${processed / task.total * 100}%`;
+                const progressText = document.getElementById('progressText');
                 if (task.status === 'completed' || task.status === 'failed') {
-                    document.getElementById('progressText').textContent = `处理完成！成功: ${task.stats.SUCCESS}, 失败: ${task.stats.FAILED}`;
-                    showAlert('folderAlert', '✅ 处理完成！', 'success');
+                    setProcessing(false);
+                    progressText.textContent = task.error || `处理完成 · 成功 ${task.stats.SUCCESS} · 失败 ${task.stats.FAILED} · 跳过 ${task.stats.SKIPPED} · 拦截 ${task.stats.BLOCKED}`;
+                    if (document.getElementById('preview').classList.contains('active')) loadPreview();
                 } else {
-                    setTimeout(pollTaskStatus, 1000);
+                    progressText.textContent = `处理中… ${processed}/${task.total}`;
+                    if (auto) setTimeout(pollTaskStatus, 1000);
                 }
             } catch (e) {
-                console.error('轮询失败', e);
+                if (taskId !== currentTaskId) return;
+                if (e.status === 404) {
+                    setProcessing(false);
+                    document.getElementById('progressText').textContent = '找不到当前任务，请重新提交。';
+                } else if (auto) {
+                    setTimeout(pollTaskStatus, 2000);
+                }
             }
         }
 
@@ -845,11 +1022,10 @@
 
             try {
                 // 先验证连接
-                await axios.post('/api/verify', { api_key: apiKey, base_url: baseUrl });
+                await requestJson('/api/verify', {api_key: apiKey, base_url: baseUrl});
 
                 // 再拉取模型列表
-                const res = await axios.post('/api/models', { api_key: apiKey, base_url: baseUrl });
-                const data = res.data;
+                const data = await requestJson('/api/models', {api_key: apiKey, base_url: baseUrl});
 
                 populateModelSelects(data);
 
@@ -861,7 +1037,7 @@
                 document.getElementById('modelCount').textContent =
                     `图像模型 ${data.image_models.length} 个 · 视觉模型 ${data.vision_models.length} 个 · 其他 ${data.other_models.length} 个`;
             } catch (e) {
-                showAlert('configAlert', '❌ ' + (e.response?.data?.message || e.message), 'error');
+                showAlert('configAlert', `❌ ${e.message}`, 'error');
             }
         }
 
@@ -934,7 +1110,7 @@
             }
 
             try {
-                await axios.post('/api/config', config);
+                await requestJson('/api/config', config);
                 currentConfig = config;
                 showAlert('configAlert', '✅ 配置已保存', 'success');
             } catch (e) {
@@ -944,60 +1120,66 @@
 
         // 加载预览
         async function loadPreview() {
-            const outputDir = document.getElementById('outputDir').value;
+            const container = document.getElementById('previewContainer');
+            const taskId = currentTaskId;
+            if (!taskId) {
+                container.textContent = '提交任务后可在这里查看成品。';
+                return;
+            }
             try {
-                const res = await axios.get('/api/outputs', { params: { output_dir: outputDir } });
-                const container = document.getElementById('previewContainer');
+                const data = await requestJson(`/api/outputs/${taskId}`);
+                if (taskId !== currentTaskId) return;
 
-                if (res.data.files.length === 0) {
-                    container.innerHTML = '<p style="text-align: center; color: #999;">暂无图片</p>';
+                if (!data.files.length) {
+                    container.textContent = '本次任务暂无可预览的图片。';
                     return;
                 }
 
-                // 更新文件夹筛选下拉框
+                const files = data.files.map(path => {
+                    const parts = path.split('/');
+                    const name = parts.pop();
+                    return {name, path, folder: parts.join('/') || '.'};
+                });
                 const filterSelect = document.getElementById('filterFolder');
-                const folders = Object.keys(res.data.folder_tree);
-                filterSelect.innerHTML = '<option value="">所有文件</option>' +
-                    folders.map(f => `<option value="${f}">${f}</option>`).join('');
+                const folders = [...new Set(files.map(file => file.folder))];
+                const selected = folders.includes(filterSelect.value) ? filterSelect.value : '';
+                filterSelect.replaceChildren(new Option('所有文件', ''), ...folders.map(folder => new Option(folder, folder)));
+                filterSelect.value = selected;
 
-                // 显示图片
-                const selectedFolder = filterSelect.value;
-                let filesToShow = res.data.files;
-
-                if (selectedFolder) {
-                    filesToShow = filesToShow.filter(f => f.path.startsWith(selectedFolder));
-                }
-
-                container.innerHTML = '<div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px;">' +
-                    filesToShow.map(file => `
-                        <div style="background: white; border: 1px solid #e9ecef; border-radius: 8px; overflow: hidden;">
-                            <img src="/api/preview/${file.path}?output_dir=${outputDir}" style="width: 100%; height: 200px; object-fit: cover;">
-                            <div style="padding: 10px;">
-                                <div style="font-weight: 600; margin-bottom: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${file.name}</div>
-                                <div style="color: #999; font-size: 0.85em;">${(file.size / 1024).toFixed(1)} KB</div>
-                            </div>
-                        </div>
-                    `).join('') +
-                    '</div>';
+                const grid = document.createElement('div');
+                grid.className = 'result-grid';
+                grid.append(...files.filter(file => !selected || file.folder === selected).map(file => {
+                    const link = document.createElement('a');
+                    link.href = `/api/preview/${taskId}/${file.path.split('/').map(encodeURIComponent).join('/')}`;
+                    link.target = '_blank';
+                    link.rel = 'noopener';
+                    const image = new Image();
+                    image.src = link.href;
+                    image.loading = 'lazy';
+                    image.alt = `预览 ${file.name}`;
+                    link.append(image, file.name);
+                    return link;
+                }));
+                container.replaceChildren(grid);
             } catch (e) {
-                console.error('加载预览失败', e);
+                if (taskId === currentTaskId) container.textContent = '预览加载失败，请重新打开预览页。';
             }
         }
 
         // 刷新统计
         function refreshStats() {
             if (currentTaskId) {
-                pollTaskStatus();
+                pollTaskStatus(false);
             }
         }
 
         // 切换 Tab
-        function switchTab(tabName) {
+        function switchTab(tabName, button) {
             document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
             document.querySelectorAll('.sidebar-section .btn').forEach(el => el.classList.remove('active'));
 
             document.getElementById(tabName).classList.add('active');
-            event.target.classList.add('active');
+            button.classList.add('active');
 
             if (tabName === 'preview') {
                 setTimeout(() => loadPreview(), 100);
@@ -1007,24 +1189,32 @@
         // 显示提示
         function showAlert(elementId, message, type = 'info') {
             const el = document.getElementById(elementId);
-            el.innerHTML = `<div class="alert ${type}">${message}</div>`;
-            setTimeout(() => el.innerHTML = '', 5000);
+            const alert = document.createElement('div');
+            alert.className = `alert ${type}`;
+            alert.setAttribute('role', 'status');
+            alert.textContent = message;
+            el.replaceChildren(alert);
+            setTimeout(() => alert.remove(), 5000);
         }
 
         // 重置文件夹
         function resetFolder() {
             document.getElementById('folderPath').value = './raw_images';
-            document.getElementById('folderTree').style.display = 'none';
-            document.getElementById('folderInfo').style.display = 'none';
+            clearFolderScan();
+            document.getElementById('editPreset').value = 'standard';
+            document.getElementById('brandText').value = '';
+            document.getElementById('customRequirements').value = '';
+            updatePresetHint();
             document.getElementById('folderLogs').innerHTML = '<p style="text-align: center; color: #999;">还没有处理日志</p>';
-            scanResults = null;
         }
 
         // 清空
         function clearAll() {
+            if (isProcessing) return;
             if (confirm('确定要清空所有数据吗？')) {
                 resetFolder();
                 currentTaskId = null;
+                document.getElementById('taskOutput').textContent = '';
                 showAlert('folderAlert', '✅ 已清空', 'success');
             }
         }

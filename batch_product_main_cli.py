@@ -20,6 +20,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 import shutil
 
+from image_presets import EditSettings, PRESETS
+
 try:
     from openai import OpenAI
 except ImportError:
@@ -131,7 +133,8 @@ def generate_prompt(category: str, flavor_info: Optional[Dict] = None) -> str:
     return base
 
 
-def process_image(client, in_path: str, output_dir: str, skip_human_dir: str, config: Dict, rel_path: str = None):
+def process_image(client, in_path: str, output_dir: str, skip_human_dir: str, config: Dict,
+                  rel_path: str = None, settings: EditSettings = EditSettings()):
     """处理单张图片"""
     file_name = os.path.basename(in_path)
     new_name = clean_filename(file_name)
@@ -146,15 +149,13 @@ def process_image(client, in_path: str, output_dir: str, skip_human_dir: str, co
     if os.path.exists(out_path):
         return {"status": "SKIPPED", "file": file_name, "reason": "already_exists"}
 
-    # 分类
-    category = classify_image(client, in_path)
-
-    # 识别口味
-    flavor_result = extract_flavor(file_name)
+    skip_human = config.get("skip_human", True)
+    category = classify_image(client, in_path) if settings.preset == 'standard' or skip_human else 'universal'
+    flavor_result = extract_flavor(file_name) if settings.preset == 'standard' else None
     flavor_info = flavor_result[1] if flavor_result else None
 
     # 隔离真人模特图
-    if category == "human_model" and config.get("skip_human", True):
+    if category == "human_model" and skip_human:
         if rel_path:
             rel_dir = os.path.dirname(rel_path)
             skip_path_dir = os.path.join(skip_human_dir, rel_dir)
@@ -166,7 +167,7 @@ def process_image(client, in_path: str, output_dir: str, skip_human_dir: str, co
         return {"status": "SKIPPED", "file": file_name, "reason": "human_model"}
 
     # 生成提示词
-    prompt = generate_prompt(category, flavor_info)
+    prompt = settings.prompt(generate_prompt(category, flavor_info))
 
     # 重试 3 次
     for attempt in range(3):
@@ -284,21 +285,21 @@ def main():
         '--max-workers', type=int, default=3,
         help='最大并发数 (默认: 3)'
     )
+    parser.add_argument('--preset', choices=PRESETS, default='standard',
+                        help='出图预设，packaging 适用于自有或授权的包装图，custom 使用自定义要求')
+    parser.add_argument('--custom-requirements', default='', help='本批次的构图、背景和布光要求')
+    parser.add_argument('--brand-text', default='', help='原素材上品牌或型号的准确拼写')
     parser.add_argument(
         '--dry-run', action='store_true',
         help='仅显示将要处理的文件，不执行处理'
     )
 
     args = parser.parse_args()
-
-    # 读取配置
-    api_key = args.api_key or os.getenv('OPENAI_API_KEY')
-    base_url = args.base_url or os.getenv('IMG2IMG_BASE_URL')
-
-    if not api_key or not base_url:
-        print("❌ 错误: 需要 API Key 和 Base URL")
-        print("   设置环境变量或使用 --api-key 和 --base-url 参数")
-        sys.exit(1)
+    try:
+        settings = EditSettings(args.preset, args.custom_requirements, args.brand_text)
+    except ValueError as exc:
+        parser.error(str(exc))
+    output_dir = settings.output_directory(args.output, args.input)
 
     # 验证输入文件夹
     if not os.path.isdir(args.input):
@@ -326,36 +327,43 @@ def main():
         print(f"   {folder:40} ({count} 张)")
 
     # 口味分析
-    print("\n🎯 口味分析：")
-    flavor_stats = defaultdict(int)
-    for img in images:
-        flavor_result = extract_flavor(img['name'])
-        if flavor_result:
-            flavor_stats[flavor_result[0]] += 1
-
-    if flavor_stats:
-        for flavor, count in sorted(flavor_stats.items(), key=lambda x: x[1], reverse=True):
-            print(f"   {flavor:20} {count:3} 张")
-    else:
-        print("   (未识别到已知口味)")
+    if settings.preset == 'standard':
+        print("\n🎯 口味分析：")
+        flavor_stats = defaultdict(int)
+        for img in images:
+            flavor_result = extract_flavor(img['name'])
+            if flavor_result:
+                flavor_stats[flavor_result[0]] += 1
+        if flavor_stats:
+            for flavor, count in sorted(flavor_stats.items(), key=lambda x: x[1], reverse=True):
+                print(f"   {flavor:20} {count:3} 张")
+        else:
+            print("   (未识别到已知口味)")
 
     # Dry run
     if args.dry_run:
         print("\n💡 Dry Run 模式 - 仅显示将要处理的文件")
-        print(f"   输出目录: {args.output}")
+        print(f"   出图预设: {settings.preset}")
+        print(f"   输出目录: {output_dir}")
         print(f"   真人模特隔离: {args.skip_human_dir}")
         print(f"   最大并发: {args.max_workers}")
         return
 
+    api_key = args.api_key or os.getenv('OPENAI_API_KEY')
+    base_url = args.base_url or os.getenv('IMG2IMG_BASE_URL')
+    if not api_key or not base_url:
+        parser.error("需要 API Key 和 Base URL。请设置环境变量或使用 --api-key 和 --base-url 参数。")
+
     # 确认
     print(f"\n⚙️ 配置：")
-    print(f"   输出目录: {args.output}")
+    print(f"   出图预设: {settings.preset}")
+    print(f"   输出目录: {output_dir}")
     print(f"   真人模特隔离: {args.skip_human_dir}")
     print(f"   最大并发: {args.max_workers}")
     print(f"\n🚀 开始处理 {len(images)} 张图片...")
 
     # 创建输出目录
-    os.makedirs(args.output, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
     os.makedirs(args.skip_human_dir, exist_ok=True)
 
     # 初始化客户端
@@ -376,10 +384,11 @@ def main():
                 process_image,
                 client,
                 img['full_path'],
-                args.output,
+                output_dir,
                 args.skip_human_dir,
                 config,
-                img['rel_path']
+                img['rel_path'],
+                settings,
             ): img for img in images
         }
 
@@ -408,7 +417,7 @@ def main():
     print(f"📈 总计:    {len(images):3} 张")
     print(f"⏱️ 耗时:    {elapsed:.1f} 秒")
     print(f"💰 成本:    ${stats.get('SUCCESS', 0) * 1.0005:.2f}")
-    print(f"\n✅ 结果保存到: {args.output}")
+    print(f"\n✅ 结果保存到: {output_dir}")
 
 
 if __name__ == '__main__':

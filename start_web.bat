@@ -51,15 +51,11 @@ pip install flask flask-cors pillow openai requests -q 2>nul
 
 echo.
 echo  Starting Flask server...
-echo  Open browser: http://localhost:5000
 echo  Press CTRL+C to stop.
 echo.
 
-:: Open browser after 2s delay
-start "" cmd /c "timeout /t 2 >nul && start http://localhost:5000"
-
-:: Start Flask
-python app_flask_pro_english.py
+:: Open the address actually bound by this instance.
+python app_flask_pro_english.py --open-browser
 
 echo.
 pause

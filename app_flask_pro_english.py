@@ -311,20 +311,25 @@ def choose_local_folder(initial_dir: str) -> str:
 
 # ==================== Flask 路由 ====================
 
+def is_local_request() -> bool:
+    return (
+        request.remote_addr in {'127.0.0.1', '::1'}
+        and urlsplit(request.host_url).hostname in {'127.0.0.1', 'localhost', '::1'}
+    )
+
+
 @app.route('/', methods=['GET'])
 def index():
     """前端主页"""
     return render_template('index_pro.html', max_brand_text=MAX_BRAND_TEXT,
-                           max_custom_requirements=MAX_CUSTOM_REQUIREMENTS)
+                           max_custom_requirements=MAX_CUSTOM_REQUIREMENTS,
+                           local_folder_picker=is_local_request())
 
 
 @app.route('/api/pick_source_folder', methods=['POST'])
 def pick_source_folder():
-    local_hosts = {'127.0.0.1', 'localhost', '::1'}
     origin = request.host_url.rstrip('/')
-    if (request.remote_addr not in {'127.0.0.1', '::1'}
-            or urlsplit(origin).hostname not in local_hosts
-            or request.headers.get('Origin') != origin):
+    if not is_local_request() or request.headers.get('Origin') != origin:
         return jsonify(message='请在运行工具的电脑上打开页面，或手动输入目录。'), 403
 
     data = request.get_json(silent=True)

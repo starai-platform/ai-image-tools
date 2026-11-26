@@ -1,0 +1,55 @@
+# Git 忽略配置
+# 将此文件保存为 .gitignore，防止敏感文件被提交到版本控制
+
+# ========== 敏感信息 ==========
+.env
+.env.local
+.env*.local
+*.key
+*.pem
+credentials.json
+
+# ========== 生成的文件 ==========
+output_main_webp/
+skipped_human/
+run_log.tsv
+.classify_cache.json
+
+# ========== Python 环境 ==========
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+ENV/
+env/
+
+# ========== IDE & 编辑器 ==========
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ========== 日志与缓存 ==========
+*.log
+.cache/
+temp/
+tmp/

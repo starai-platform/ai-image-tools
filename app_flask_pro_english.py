@@ -411,6 +411,39 @@ def verify_api():
         return jsonify({"status": "error", "message": str(e)[:200]}), 400
 
 
+@app.route('/api/models', methods=['POST'])
+def list_models():
+    """获取上游渠道的模型列表，按类型分组返回"""
+    data = request.json or {}
+    api_key = data.get('api_key', '')
+    base_url = data.get('base_url', '')
+
+    if not api_key or not base_url:
+        return jsonify({"status": "error", "message": "api_key and base_url are required"}), 400
+
+    try:
+        client = OpenAI(base_url=base_url, api_key=api_key, timeout=15)
+        models_resp = client.models.list()
+        all_ids = sorted([m.id for m in models_resp.data])
+
+        # 按关键词简单分组，方便前端展示
+        image_models = [m for m in all_ids if any(k in m.lower() for k in
+                        ['image', 'dall-e', 'gpt-image', 'flux', 'sd', 'midjourney', 'ideogram'])]
+        vision_models = [m for m in all_ids if any(k in m.lower() for k in
+                         ['gpt-4', 'gpt-4o', 'claude', 'gemini', 'vision'])]
+        other_models = [m for m in all_ids if m not in image_models and m not in vision_models]
+
+        return jsonify({
+            "status": "success",
+            "all": all_ids,
+            "image_models": image_models,
+            "vision_models": vision_models,
+            "other_models": other_models,
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)[:200]}), 400
+
+
 @app.route('/api/config', methods=['GET', 'POST'])
 def config():
     """配置管理"""

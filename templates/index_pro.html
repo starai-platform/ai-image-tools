@@ -631,19 +631,25 @@
                             <label>Base URL</label>
                             <input type="text" id="baseUrl" placeholder="https://your-domain.com/v1">
                         </div>
-                        <button class="btn-primary" onclick="verifyAPI()">✅ 验证连接</button>
+                        <button class="btn-primary" onclick="verifyAndLoadModels()">✅ 验证并获取模型</button>
                     </div>
 
                     <div class="config-section">
                         <h4>🤖 模型选择</h4>
+                        <p style="color:#999;font-size:0.9em;margin-bottom:12px;">验证连接后自动从上游渠道获取可用模型</p>
                         <div class="form-group">
-                            <label>分类模型</label>
-                            <input type="text" id="visionModel" value="gpt-4o-mini">
+                            <label>分类模型 <span style="color:#999;font-size:0.85em;">（用于识别图片类型，轻量模型即可）</span></label>
+                            <select id="visionModel" style="width:100%;padding:10px;border:2px solid #e9ecef;border-radius:8px;">
+                                <option value="">— 请先验证连接获取模型列表 —</option>
+                            </select>
                         </div>
                         <div class="form-group">
-                            <label>重绘模型</label>
-                            <input type="text" id="imageModel" value="gpt-image-2.5-sunburst">
+                            <label>重绘模型 <span style="color:#999;font-size:0.85em;">（用于 AI 图片重构，需支持 image edit）</span></label>
+                            <select id="imageModel" style="width:100%;padding:10px;border:2px solid #e9ecef;border-radius:8px;">
+                                <option value="">— 请先验证连接获取模型列表 —</option>
+                            </select>
                         </div>
+                        <div id="modelCount" style="color:#999;font-size:0.85em;margin-top:8px;"></div>
                     </div>
 
                     <div class="config-section">
@@ -825,27 +831,90 @@
             }
         }
 
-        // 验证 API
-        async function verifyAPI() {
-            const apiKey = document.getElementById('apiKey').value;
-            const baseUrl = document.getElementById('baseUrl').value;
+        // 验证 API 并获取模型列表
+        async function verifyAndLoadModels() {
+            const apiKey = document.getElementById('apiKey').value.trim();
+            const baseUrl = document.getElementById('baseUrl').value.trim();
 
             if (!apiKey || !baseUrl) {
                 showAlert('configAlert', '❌ 请填写 API Key 和 Base URL', 'error');
                 return;
             }
 
+            showAlert('configAlert', '⏳ 正在连接并获取模型列表...', 'info');
+
             try {
-                const res = await axios.post('/api/verify', {
-                    api_key: apiKey,
-                    base_url: baseUrl
-                });
-                showAlert('configAlert', res.data.message, 'success');
+                // 先验证连接
+                await axios.post('/api/verify', { api_key: apiKey, base_url: baseUrl });
+
+                // 再拉取模型列表
+                const res = await axios.post('/api/models', { api_key: apiKey, base_url: baseUrl });
+                const data = res.data;
+
+                populateModelSelects(data);
+
                 currentConfig.api_key = apiKey;
                 currentConfig.base_url = baseUrl;
+
+                const total = data.all.length;
+                showAlert('configAlert', `✅ 连接成功，共获取 ${total} 个模型`, 'success');
+                document.getElementById('modelCount').textContent =
+                    `图像模型 ${data.image_models.length} 个 · 视觉模型 ${data.vision_models.length} 个 · 其他 ${data.other_models.length} 个`;
             } catch (e) {
-                showAlert('configAlert', e.response?.data?.message || '❌ 连接失败', 'error');
+                showAlert('configAlert', '❌ ' + (e.response?.data?.message || e.message), 'error');
             }
+        }
+
+        // 填充模型下拉框
+        function populateModelSelects(data) {
+            const visionSel = document.getElementById('visionModel');
+            const imageSel = document.getElementById('imageModel');
+
+            // 分类模型：视觉模型优先，其次全部
+            const visionList = data.vision_models.length ? data.vision_models : data.all;
+            visionSel.innerHTML = '';
+            if (data.vision_models.length) {
+                const g1 = document.createElement('optgroup');
+                g1.label = '── 视觉/多模态模型 ──';
+                data.vision_models.forEach(m => {
+                    const opt = new Option(m, m);
+                    if (m.includes('gpt-4o-mini')) opt.selected = true;
+                    g1.appendChild(opt);
+                });
+                visionSel.appendChild(g1);
+            }
+            if (data.other_models.length) {
+                const g2 = document.createElement('optgroup');
+                g2.label = '── 其他模型 ──';
+                data.other_models.forEach(m => g2.appendChild(new Option(m, m)));
+                visionSel.appendChild(g2);
+            }
+
+            // 重绘模型：图像模型优先，其次全部
+            imageSel.innerHTML = '';
+            if (data.image_models.length) {
+                const g3 = document.createElement('optgroup');
+                g3.label = '── 图像生成/编辑模型 ──';
+                data.image_models.forEach(m => {
+                    const opt = new Option(m, m);
+                    if (m.toLowerCase().includes('gpt-image')) opt.selected = true;
+                    g3.appendChild(opt);
+                });
+                imageSel.appendChild(g3);
+            }
+            if (data.other_models.length) {
+                const g4 = document.createElement('optgroup');
+                g4.label = '── 其他模型 ──';
+                data.other_models.forEach(m => g4.appendChild(new Option(m, m)));
+                imageSel.appendChild(g4);
+            }
+            if (!data.image_models.length && !data.other_models.length) {
+                data.all.forEach(m => imageSel.appendChild(new Option(m, m)));
+            }
+
+            // 同步到 currentConfig
+            currentConfig.vision_model = visionSel.value;
+            currentConfig.image_model = imageSel.value;
         }
 
         // 保存配置
@@ -858,6 +927,11 @@
                 max_workers: parseInt(document.getElementById('maxWorkers').value),
                 skip_human: document.getElementById('skipHumanImages').checked,
             };
+
+            if (!config.vision_model || !config.image_model) {
+                showAlert('configAlert', '❌ 请先验证连接并选择模型', 'error');
+                return;
+            }
 
             try {
                 await axios.post('/api/config', config);
